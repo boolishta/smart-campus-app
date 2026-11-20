@@ -1,0 +1,6 @@
+{
+  "name": "SmartCampus",
+  "description": "Planeamento de estudo automatizado e personalizado para estudantes universitários.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
