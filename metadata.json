@@ -1,6 +1,6 @@
 {
   "name": "SmartCampus",
-  "description": "Planeamento de estudo automatizado e personalizado para estudantes universitários.",
+  "description": "Offline-first academic study planner with PDF and iCalendar ingestion, timeline management, and daily morning briefings.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

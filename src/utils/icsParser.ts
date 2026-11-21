@@ -1,47 +1,123 @@
-/**
- * Local iCalendar (.ics) parser that runs directly on the user's device.
- * Extracts VEVENT entries (SUMMARY, DTSTART, DTEND, LOCATION, DESCRIPTION).
- */
+import { AcademicEvent, AcademicEventType, EventPriority } from '../types';
 
-export interface ParsedIcsEvent {
-  title: string;
-  startDate: string; // YYYY-MM-DD
-  startTime: string; // HH:mm
-  endTime: string;   // HH:mm
-  location: string;
-  description: string;
+function createId(prefix: string): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-export function parseIcsContent(icsText: string): ParsedIcsEvent[] {
-  const events: ParsedIcsEvent[] = [];
-  const lines = icsText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+function unescapeIcsText(value: string): string {
+  return value
+    .replace(/\\n/gi, ' ')
+    .replace(/\\,/g, ',')
+    .replace(/\\;/g, ';')
+    .replace(/\\\\/g, '\\')
+    .trim();
+}
+
+function parseIcsDateTime(rawValue: string): { date: string; time: string | null } | null {
+  const cleaned = rawValue.trim();
+
+  // Format: YYYYMMDDTHHMMSS(Z)?
+  const dateTimeMatch = cleaned.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/);
+  if (dateTimeMatch) {
+    const [, y, m, d, hh, mm] = dateTimeMatch;
+    return {
+      date: `${y}-${m}-${d}`,
+      time: `${hh}:${mm}`,
+    };
+  }
+
+  // Format: YYYYMMDD (All-day event)
+  const dateOnlyMatch = cleaned.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (dateOnlyMatch) {
+    const [, y, m, d] = dateOnlyMatch;
+    return {
+      date: `${y}-${m}-${d}`,
+      time: null,
+    };
+  }
+
+  return null;
+}
+
+function inferEventType(summary: string, categories: string): AcademicEventType {
+  const combined = `${summary} ${categories}`.toLowerCase();
+  if (/\b(exam|midterm|final|quiz|test|assessment)\b/.test(combined)) {
+    return 'EXAM';
+  }
+  if (/\b(lab|laboratory|practical|workshop)\b/.test(combined)) {
+    return 'LAB';
+  }
+  if (/\b(assignment|homework|deliverable|project|submission|report|essay|milestone|due)\b/.test(combined)) {
+    return 'ASSIGNMENT';
+  }
+  if (/\b(lecture|class|seminar|tutorial|course)\b/.test(combined)) {
+    return 'LECTURE';
+  }
+  return 'OTHER';
+}
+
+function inferPriority(eventType: AcademicEventType): EventPriority {
+  if (eventType === 'EXAM') return 'HIGH';
+  if (eventType === 'ASSIGNMENT' || eventType === 'LAB') return 'MEDIUM';
+  return 'LOW';
+}
+
+/**
+ * Deterministic client-side iCalendar (.ics) VEVENT parser.
+ * Parses SUMMARY, DTSTART, DTEND without invoking any external API.
+ */
+export function parseIcsContent(icsText: string, documentId: string): AcademicEvent[] {
+  // RFC 5545 line unfolding: CRLF or LF followed by single space or tab
+  const unfolded = icsText.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '');
+  const lines = unfolded.split(/\r?\n/);
+
+  const drafts: AcademicEvent[] = [];
+  const nowIso = new Date().toISOString();
 
   let inEvent = false;
-  let currentEvent: Partial<ParsedIcsEvent> & { rawStart?: string; rawEnd?: string } = {};
+  let summary = '';
+  let categories = '';
+  let dtStartRaw = '';
+  let dtEndRaw = '';
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
 
-    if (line.startsWith('BEGIN:VEVENT')) {
+    if (line === 'BEGIN:VEVENT') {
       inEvent = true;
-      currentEvent = {};
+      summary = '';
+      categories = '';
+      dtStartRaw = '';
+      dtEndRaw = '';
       continue;
     }
 
-    if (line.startsWith('END:VEVENT')) {
-      if (inEvent && currentEvent.title) {
-        // Format parsed dates
-        const parsedStart = parseIcsDateTime(currentEvent.rawStart || '');
-        const parsedEnd = parseIcsDateTime(currentEvent.rawEnd || '');
+    if (line === 'END:VEVENT') {
+      if (inEvent && summary && dtStartRaw) {
+        const startParsed = parseIcsDateTime(dtStartRaw);
+        const endParsed = dtEndRaw ? parseIcsDateTime(dtEndRaw) : null;
 
-        events.push({
-          title: currentEvent.title || 'Sessão Académica',
-          startDate: parsedStart.date || '2026-11-06',
-          startTime: parsedStart.time || '10:00',
-          endTime: parsedEnd.time || '12:00',
-          location: currentEvent.location || 'Campus Universitário',
-          description: currentEvent.description || 'Importado de ficheiro de calendário .ics',
-        });
+        if (startParsed) {
+          const eventType = inferEventType(summary, categories);
+          drafts.push({
+            eventId: createId('evt'),
+            documentId,
+            title: summary.slice(0, 180),
+            eventType,
+            eventDate: startParsed.date,
+            startTime: startParsed.time,
+            endTime: endParsed ? endParsed.time : null,
+            priority: inferPriority(eventType),
+            status: 'DRAFT',
+            sourceSnippet: null,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          });
+        }
       }
       inEvent = false;
       continue;
@@ -49,79 +125,23 @@ export function parseIcsContent(icsText: string): ParsedIcsEvent[] {
 
     if (!inEvent) continue;
 
-    if (line.startsWith('SUMMARY:')) {
-      currentEvent.title = line.substring(8).trim();
-    } else if (line.startsWith('LOCATION:')) {
-      currentEvent.location = line.substring(9).trim();
-    } else if (line.startsWith('DESCRIPTION:')) {
-      currentEvent.description = line.substring(12).trim();
-    } else if (line.startsWith('DTSTART')) {
-      const val = line.split(':')[1];
-      if (val) currentEvent.rawStart = val.trim();
-    } else if (line.startsWith('DTEND')) {
-      const val = line.split(':')[1];
-      if (val) currentEvent.rawEnd = val.trim();
+    const colonIndex = line.indexOf(':');
+    if (colonIndex === -1) continue;
+
+    const propertyHeader = line.slice(0, colonIndex).toUpperCase();
+    const propertyName = propertyHeader.split(';')[0];
+    const propertyValue = line.slice(colonIndex + 1);
+
+    if (propertyName === 'SUMMARY') {
+      summary = unescapeIcsText(propertyValue);
+    } else if (propertyName === 'DTSTART') {
+      dtStartRaw = propertyValue.trim();
+    } else if (propertyName === 'DTEND') {
+      dtEndRaw = propertyValue.trim();
+    } else if (propertyName === 'CATEGORIES') {
+      categories = unescapeIcsText(propertyValue);
     }
   }
 
-  return events;
+  return drafts;
 }
-
-function parseIcsDateTime(raw: string): { date: string; time: string } {
-  // Typical ICS format: 20261106T140000Z or 20261106T140000 or 20261106
-  const clean = raw.replace(/[^0-9T]/g, '');
-  if (!clean) return { date: '', time: '' };
-
-  if (clean.includes('T')) {
-    const [datePart, timePart] = clean.split('T');
-    const year = datePart.substring(0, 4);
-    const month = datePart.substring(4, 6);
-    const day = datePart.substring(6, 8);
-    const hours = timePart.substring(0, 2);
-    const minutes = timePart.substring(2, 4);
-    return {
-      date: `${year}-${month}-${day}`,
-      time: `${hours}:${minutes}`,
-    };
-  } else if (clean.length >= 8) {
-    const year = clean.substring(0, 4);
-    const month = clean.substring(4, 6);
-    const day = clean.substring(6, 8);
-    return {
-      date: `${year}-${month}-${day}`,
-      time: '09:00',
-    };
-  }
-
-  return { date: '', time: '' };
-}
-
-export const SAMPLE_ICS_DATA = `BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//Universidade//Horario Academico v2.4//PT
-CALSCALE:GREGORIAN
-BEGIN:VEVENT
-UID:evt-poo-aula-01@campus.up.pt
-DTSTART:20261106T093000
-DTEND:20261106T113000
-SUMMARY:POO - Aula Teórica (Polimorfismo & Interfaces)
-LOCATION:Anfiteatro B2 - Edifício de Engenharia
-DESCRIPTION:Aula teórica presencial sobre padrões de desenho e arquitetura limpa em Java.
-END:VEVENT
-BEGIN:VEVENT
-UID:evt-ami-lab-02@campus.up.pt
-DTSTART:20261106T140000
-DTEND:20261106T160000
-SUMMARY:Análise Matemática I - Sessão de Problemas
-LOCATION:Sala de Aulas 1.04
-DESCRIPTION:Resolução supervisionada de integrais impróprios e equações diferenciais lineares.
-END:VEVENT
-BEGIN:VEVENT
-UID:evt-sd-lab-03@campus.up.pt
-DTSTART:20261109T100000
-DTEND:20261109T120000
-SUMMARY:Sistemas Digitais - Lab de FSM e FPGA
-LOCATION:Laboratório I-204 (Hardware)
-DESCRIPTION:Implementação prática de circuitos sequenciais síncronos em placa FPGA DE10-Lite.
-END:VEVENT
-END:VCALENDAR`;

@@ -3,681 +3,558 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
+import { CheckCircle2, AlertCircle, Trash2, X } from 'lucide-react';
 import {
-  StudyMaterial,
-  Deadline,
-  DraftEvent,
-  TimelineEvent,
-  MorningBriefing,
-  AnonymizationAuditEntry,
-  VerificationModalData,
-  AppNotification,
+  AcademicEvent,
+  AcademicEventType,
+  DailyBriefing,
+  EventPriority,
+  SourceDocument,
+  WorkflowStage,
 } from './types';
 import {
-  INITIAL_MATERIALS,
-  INITIAL_DRAFT_EVENTS,
-  INITIAL_TIMELINE_EVENTS,
-  INITIAL_MORNING_BRIEFING,
-  INITIAL_AUDIT_LOGS,
-} from './mockData';
-import { sqliteDb } from './utils/sqliteDb';
-import { Language, TRANSLATIONS } from './translations';
-import { Header, AppTab } from './components/Header';
-import { TestScenarioBar } from './components/TestScenarioBar';
-import { MaterialsSection } from './components/MaterialsSection';
-import { DraftPreviewSection } from './components/DraftPreviewSection';
-import { UnifiedTimelineSection } from './components/UnifiedTimelineSection';
-import { MorningBriefingSection } from './components/MorningBriefingSection';
-import { PrivacyPurgeSection } from './components/PrivacyPurgeSection';
-import { SourceVerificationModal } from './components/SourceVerificationModal';
-import { FileChangeConfirmModal } from './components/FileChangeConfirmModal';
-import { CheckCircle2, AlertCircle, X, ShieldAlert, BookOpen, Check, Search, ArrowRight } from 'lucide-react';
+  confirmAndDeduplicateEvents,
+  createSampleDataset,
+  loadAcademicEvents,
+  loadDailyBriefings,
+  loadSourceDocuments,
+  purgeAllLocalData,
+  saveAcademicEvents,
+  saveDailyBriefings,
+  saveSourceDocuments,
+  upsertDailyBriefing,
+} from './utils/storage';
+import {
+  formatTimeRange,
+  getCountdownInfo,
+  getEventsForBriefingWindow,
+  getTodayIsoDate,
+} from './utils/dateUtils';
+import { ActiveView, Header } from './components/Header';
+import { WorkflowStepper } from './components/WorkflowStepper';
+import { UploadIngestionView } from './components/UploadIngestionView';
+import { TimelineDashboard } from './components/TimelineDashboard';
+import { EventFormModal } from './components/EventFormModal';
+import { SourceSnippetModal } from './components/SourceSnippetModal';
+import { DeleteDocumentModal } from './components/DeleteDocumentModal';
+import { PurgeConfirmModal } from './components/PurgeConfirmModal';
+
+function createId(prefix: string): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+interface ToastMessage {
+  id: string;
+  text: string;
+  tone: 'success' | 'info' | 'warning';
+}
 
 export default function App() {
-  // Localization Language State (English & Portuguese)
-  const [language, setLanguage] = useState<Language>('pt');
-  const t = TRANSLATIONS[language];
+  // Real browser persistence (survives page reload without overwriting)
+  const [documents, setDocuments] = useState<SourceDocument[]>(() => loadSourceDocuments());
+  const [confirmedEvents, setConfirmedEvents] = useState<AcademicEvent[]>(() =>
+    loadAcademicEvents()
+  );
+  const [briefings, setBriefings] = useState<DailyBriefing[]>(() => loadDailyBriefings());
 
-  // Update HTML tag lang attribute
-  useEffect(() => {
-    document.documentElement.lang = language === 'pt' ? 'pt-PT' : 'en';
-  }, [language]);
+  // Uncommitted ingestion session state (never written to localStorage until Confirm Events)
+  const [pendingDocument, setPendingDocument] = useState<SourceDocument | null>(null);
+  const [draftEvents, setDraftEvents] = useState<AcademicEvent[]>([]);
 
-  // Navigation (Screen E01 to E07)
-  const [activeTab, setActiveTab] = useState<AppTab>('materials');
+  // Navigation & 5-Stage Stepper state
+  const [activeView, setActiveView] = useState<ActiveView>('timeline');
+  const [activeStage, setActiveStage] = useState<WorkflowStage>(5);
 
-  // Core State (Backed by Local SQLite Database Cache)
-  const [materials, setMaterials] = useState<StudyMaterial[]>(INITIAL_MATERIALS);
-  const [deadlines, setDeadlines] = useState<Deadline[]>([]);
-  const [drafts, setDrafts] = useState<DraftEvent[]>(INITIAL_DRAFT_EVENTS);
-  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>(INITIAL_TIMELINE_EVENTS);
-  const [briefing, setBriefing] = useState<MorningBriefing>(INITIAL_MORNING_BRIEFING);
-  const [auditLogs, setAuditLogs] = useState<AnonymizationAuditEntry[]>(INITIAL_AUDIT_LOGS);
-  const [isOfflineMode, setIsOfflineMode] = useState<boolean>(false);
-  const [isScheduleConfirmed, setIsScheduleConfirmed] = useState<boolean>(true);
+  // Live defense demo toggle
+  const [simulateOfflineError, setSimulateOfflineError] = useState<boolean>(false);
+  const [isGeneratingBriefing, setIsGeneratingBriefing] = useState<boolean>(false);
 
-  // Scenario 2 Glitch Simulation State
-  const [isGlitchActive, setIsGlitchActive] = useState<boolean>(false);
+  // Modals
+  const [eventModalOpen, setEventModalOpen] = useState<boolean>(false);
+  const [editingEvent, setEditingEvent] = useState<AcademicEvent | null>(null);
+  const [verifyingEvent, setVerifyingEvent] = useState<AcademicEvent | null>(null);
+  const [deletingDocument, setDeletingDocument] = useState<SourceDocument | null>(null);
+  const [purgeModalOpen, setPurgeModalOpen] = useState<boolean>(false);
 
-  // Screen E06: Source Verification Modal State
-  const [verificationModal, setVerificationModal] = useState<VerificationModalData>({
-    isOpen: false,
-    eventTitle: '',
-    subject: '',
-    sourceDocumentName: '',
-    publicationDate: '',
-    extractedDueDate: '',
-    dateReasoning: '',
-    confidenceScore: 96,
-    highlightPhrase: '',
-    fullSnippet: '',
-    documentType: 'docx',
-  });
-
-  // Rule RN04: Recalculation Confirmation Prompt on File Modification/Removal
-  const [pendingFileChange, setPendingFileChange] = useState<{
-    isOpen: boolean;
-    changeType: 'added' | 'deleted';
-    fileName: string;
-    pendingMaterial?: StudyMaterial;
-    deleteMaterialId?: string;
-  }>({
-    isOpen: false,
-    changeType: 'added',
-    fileName: '',
-  });
-
-  // Toast Notifications
-  const [toast, setToast] = useState<AppNotification | null>(null);
-
-  const showToast = (message: string, type: 'success' | 'info' | 'warning' | 'error' = 'success') => {
-    setToast({ id: `toast-${Date.now()}`, message, type });
-    setTimeout(() => {
-      setToast(null);
+  // Toast feedback
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const showToast = (text: string, tone: ToastMessage['tone'] = 'success') => {
+    const id = createId('toast');
+    setToast({ id, text, tone });
+    window.setTimeout(() => {
+      setToast((current) => (current?.id === id ? null : current));
     }, 4000);
   };
 
-  // SQLite stats calculation
-  const sqliteStats = sqliteDb.getStats(timelineEvents, materials, auditLogs);
-  const uncommittedDraftsCount = drafts.filter((d) => !d.isConfirmed).length;
+  const todayIso = getTodayIsoDate();
+  const todayBriefing = useMemo(
+    () => briefings.find((b) => b.briefingDate === todayIso) ?? null,
+    [briefings, todayIso]
+  );
 
-  // Sync to local SQLite cache
-  useEffect(() => {
-    sqliteDb.saveEvents(timelineEvents);
-    sqliteDb.saveMaterials(materials);
-    sqliteDb.saveAuditLogs(auditLogs);
-  }, [timelineEvents, materials, auditLogs]);
-
-  // ==========================================
-  // MATERIAL HANDLERS (with RN04 Rule Enforcement)
-  // ==========================================
-  const handleAddMaterial = (newMaterial: StudyMaterial) => {
-    const updated = [newMaterial, ...materials];
-    setMaterials(updated);
-
-    // Rule RN04: Mandatory modal prompt requesting confirmation to recalculate
-    setPendingFileChange({
-      isOpen: true,
-      changeType: 'added',
-      fileName: newMaterial.name,
-      pendingMaterial: newMaterial,
-    });
+  // View & Stepper navigation
+  const handleSelectView = (view: ActiveView) => {
+    setActiveView(view);
+    if (view === 'timeline') {
+      setActiveStage(5);
+    } else if (pendingDocument && draftEvents.length > 0) {
+      setActiveStage(2);
+    } else {
+      setActiveStage(1);
+    }
   };
 
-  const handleDeleteMaterial = (materialId: string) => {
-    const target = materials.find((m) => m.id === materialId);
-    if (!target) return;
-
-    const updated = materials.filter((m) => m.id !== materialId);
-    setMaterials(updated);
-
-    // Rule RN04: Prompt confirmation to recalculate schedule
-    setPendingFileChange({
-      isOpen: true,
-      changeType: 'deleted',
-      fileName: target.name,
-      deleteMaterialId: materialId,
-    });
+  const handleSelectStage = (stage: WorkflowStage) => {
+    setActiveStage(stage);
+    if (stage === 5) {
+      setActiveView('timeline');
+    } else {
+      setActiveView('upload');
+    }
   };
 
-  const handleConfirmFileChangeRecalculation = () => {
-    setIsScheduleConfirmed(false);
-    setPendingFileChange((prev) => ({ ...prev, isOpen: false }));
-    showToast(
-      language === 'pt'
-        ? 'Cronograma recalculado! Aceda aos Rascunhos e clique em "Confirm Events" ("Confirmar Horário") para validar.'
-        : 'Schedule recalculated! Go to AI Drafts and click "Confirm Events" to commit changes.',
-      'info'
+  // =========================================================
+  // A) UPLOAD & HUMAN-IN-THE-LOOP INGESTION
+  // =========================================================
+  const handleDraftsParsed = (doc: SourceDocument, drafts: AcademicEvent[]) => {
+    setPendingDocument(doc);
+    setDraftEvents(drafts);
+    setActiveView('upload');
+    setActiveStage(2);
+  };
+
+  const handleUpdateDraft = (updated: AcademicEvent) => {
+    setDraftEvents((prev) =>
+      prev.map((d) => (d.eventId === updated.eventId ? updated : d))
     );
   };
 
-  const handleCancelFileChangeRecalculation = () => {
-    setPendingFileChange((prev) => ({ ...prev, isOpen: false }));
-    showToast(t.toastFileChangeKept, 'info');
+  const handleRemoveDraft = (eventId: string) => {
+    setDraftEvents((prev) => {
+      const next = prev.filter((d) => d.eventId !== eventId);
+      if (next.length === 0) {
+        setPendingDocument(null);
+        setActiveStage(1);
+      }
+      return next;
+    });
   };
 
-  // Add drafts extracted from files
-  const handleAddDraftsFromExtraction = (newDrafts: DraftEvent[]) => {
-    setDrafts((prev) => [...newDrafts, ...prev]);
-    setIsScheduleConfirmed(false);
-    showToast(
-      language === 'pt'
-        ? `${newDrafts.length} rascunhos extraídos por IA aguardam revisão na Grelha de Rascunhos.`
-        : `${newDrafts.length} AI draft events generated. Awaiting review in Drafts.`,
-      'info'
+  const handleConfirmEvents = () => {
+    if (!pendingDocument || draftEvents.length === 0) return;
+
+    const { merged, addedCount, skippedCount } = confirmAndDeduplicateEvents(
+      confirmedEvents,
+      draftEvents
     );
-  };
 
-  // ==========================================
-  // HUMAN-IN-THE-LOOP CONTROL (Rule RN01 / Screen E02)
-  // ==========================================
-  const handleConfirmAllEvents = () => {
-    const uncommitted = drafts.filter((d) => !d.isConfirmed);
-
-    // Convert draft events into timeline events committed to SQLite
-    const newTimelineEvents: TimelineEvent[] = uncommitted.map((d) => ({
-      id: `evt-committed-${d.id}`,
-      title: d.title,
-      subject: d.subject,
-      date: d.dueDate,
-      startTime: d.time || '10:00',
-      endTime: d.endTime || '12:00',
-      category: d.category,
-      priority: d.priority,
-      location: d.location || 'Campus Universitário',
-      sourceType: d.sourceDocumentName.endsWith('.ics')
-        ? 'ics'
-        : d.sourceDocumentName.endsWith('.docx')
-        ? 'docx_extracted'
-        : 'pdf_extracted',
-      sourceDocumentName: d.sourceDocumentName,
-      sourceSnippet: d.sourceSnippet,
-      highlightPhrase: d.highlightPhrase,
-      dateReasoning: d.dateReasoning,
-      confidenceScore: d.confidenceScore,
-      publicationDate: d.publicationDate,
-    }));
-
-    setTimelineEvents((prev) => [...prev, ...newTimelineEvents]);
-
-    // Mark drafts as confirmed
-    setDrafts((prev) => prev.map((d) => ({ ...d, isConfirmed: true })));
-    setIsScheduleConfirmed(true);
-
-    showToast(t.toastScheduleConfirmed, 'success');
-  };
-
-  const handleConfirmSingleEvent = (draftId: string) => {
-    const draft = drafts.find((d) => d.id === draftId);
-    if (!draft) return;
-
-    const newEv: TimelineEvent = {
-      id: `evt-single-${draft.id}`,
-      title: draft.title,
-      subject: draft.subject,
-      date: draft.dueDate,
-      startTime: draft.time || '10:00',
-      endTime: draft.endTime || '12:00',
-      category: draft.category,
-      priority: draft.priority,
-      location: draft.location || 'Campus Universitário',
-      sourceType: draft.sourceDocumentName.endsWith('.ics') ? 'ics' : 'pdf_extracted',
-      sourceDocumentName: draft.sourceDocumentName,
-      sourceSnippet: draft.sourceSnippet,
-      highlightPhrase: draft.highlightPhrase,
-      dateReasoning: draft.dateReasoning,
-      confidenceScore: draft.confidenceScore,
-      publicationDate: draft.publicationDate,
+    const confirmedDoc: SourceDocument = {
+      ...pendingDocument,
+      ingestionStatus: 'CONFIRMED',
     };
 
-    setTimelineEvents((prev) => [newEv, ...prev]);
-    setDrafts((prev) => prev.map((d) => (d.id === draftId ? { ...d, isConfirmed: true } : d)));
-    showToast(
-      language === 'pt' ? `Evento "${draft.title}" gravado no SQLite.` : `Event "${draft.title}" committed to SQLite.`
+    const nextDocuments = [confirmedDoc, ...documents];
+    saveSourceDocuments(nextDocuments);
+    saveAcademicEvents(merged);
+
+    setDocuments(nextDocuments);
+    setConfirmedEvents(merged);
+    setPendingDocument(null);
+    setDraftEvents([]);
+    setActiveView('timeline');
+    setActiveStage(5);
+
+    if (skippedCount > 0) {
+      showToast(
+        `Saved ${addedCount} ${addedCount === 1 ? 'event' : 'events'} locally (${skippedCount} ${
+          skippedCount === 1 ? 'duplicate' : 'duplicates'
+        } skipped).`
+      );
+    } else {
+      showToast(`Saved ${addedCount} ${addedCount === 1 ? 'event' : 'events'} to your timeline.`);
+    }
+  };
+
+  const handleCancelDrafts = () => {
+    // Discard drafts with ZERO writes to localStorage
+    setPendingDocument(null);
+    setDraftEvents([]);
+    setActiveStage(1);
+    showToast('Temporary drafts discarded. No changes were saved.', 'info');
+  };
+
+  // =========================================================
+  // B) TIMELINE FULL CRUD & UPLOADED FILE MANAGEMENT
+  // =========================================================
+  const handleSaveEvent = (data: {
+    eventId?: string;
+    title: string;
+    eventType: AcademicEventType;
+    eventDate: string;
+    startTime: string | null;
+    endTime: string | null;
+    priority: EventPriority;
+  }) => {
+    const nowIso = new Date().toISOString();
+    let nextEvents: AcademicEvent[];
+
+    if (data.eventId) {
+      nextEvents = confirmedEvents.map((evt) =>
+        evt.eventId === data.eventId
+          ? {
+              ...evt,
+              title: data.title,
+              eventType: data.eventType,
+              eventDate: data.eventDate,
+              startTime: data.startTime,
+              endTime: data.endTime,
+              priority: data.priority,
+              updatedAt: nowIso,
+            }
+          : evt
+      );
+      showToast('Event updated.');
+    } else {
+      const created: AcademicEvent = {
+        eventId: createId('evt'),
+        documentId: null,
+        title: data.title,
+        eventType: data.eventType,
+        eventDate: data.eventDate,
+        startTime: data.startTime,
+        endTime: data.endTime,
+        priority: data.priority,
+        status: 'CONFIRMED',
+        sourceSnippet: null,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      nextEvents = [...confirmedEvents, created];
+      showToast('Event added to your timeline.');
+    }
+
+    saveAcademicEvents(nextEvents);
+    setConfirmedEvents(nextEvents);
+    setEventModalOpen(false);
+    setEditingEvent(null);
+  };
+
+  const handleDeleteEvent = (eventId: string) => {
+    const nextEvents = confirmedEvents.filter((e) => e.eventId !== eventId);
+    saveAcademicEvents(nextEvents);
+    setConfirmedEvents(nextEvents);
+    showToast('Event deleted.', 'info');
+  };
+
+  const handleDeleteDocumentOnly = (documentId: string) => {
+    const nextDocs = documents.filter((d) => d.documentId !== documentId);
+    const nextEvents = confirmedEvents.map((e) =>
+      e.documentId === documentId ? { ...e, documentId: null } : e
     );
+    saveSourceDocuments(nextDocs);
+    saveAcademicEvents(nextEvents);
+    setDocuments(nextDocs);
+    setConfirmedEvents(nextEvents);
+    setDeletingDocument(null);
+    showToast('File removed. Timeline events were kept.', 'info');
   };
 
-  const handleDeleteDraft = (draftId: string) => {
-    setDrafts(drafts.filter((d) => d.id !== draftId));
-    showToast(language === 'pt' ? 'Rascunho descartado.' : 'Draft discarded.', 'info');
+  const handleDeleteDocumentWithEvents = (documentId: string) => {
+    const nextDocs = documents.filter((d) => d.documentId !== documentId);
+    const nextEvents = confirmedEvents.filter((e) => e.documentId !== documentId);
+    saveSourceDocuments(nextDocs);
+    saveAcademicEvents(nextEvents);
+    setDocuments(nextDocs);
+    setConfirmedEvents(nextEvents);
+    setDeletingDocument(null);
+    showToast('File and linked events removed.', 'info');
   };
 
-  // ==========================================
-  // TIMELINE EVENT HANDLERS (RF04)
-  // ==========================================
-  const handleUpdateTimelineEvent = (updated: TimelineEvent) => {
-    setTimelineEvents((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
-    showToast(t.toastSlotUpdated);
+  const handleLoadSampleData = () => {
+    if (confirmedEvents.length > 0) return;
+    const sample = createSampleDataset(todayIso);
+    saveSourceDocuments(sample.documents);
+    saveAcademicEvents(sample.events);
+    setDocuments(sample.documents);
+    setConfirmedEvents(sample.events);
+    showToast('Sample course schedule loaded and saved locally.');
   };
 
-  const handleDeleteTimelineEvent = (id: string) => {
-    setTimelineEvents((prev) => prev.filter((e) => e.id !== id));
-    showToast(t.toastSlotDeleted, 'info');
+  // =========================================================
+  // C) DAILY MORNING BRIEFING (08:00 AM)
+  // =========================================================
+  const buildOfflineFallbackBriefing = (): DailyBriefing => {
+    const upcoming = getEventsForBriefingWindow(confirmedEvents, todayIso).slice(0, 3);
+    const lines = upcoming.map((evt, idx) => {
+      const countdown = getCountdownInfo(evt.eventDate, todayIso);
+      return `${idx + 1}. ${evt.title} (${countdown.label}, ${formatTimeRange(
+        evt.startTime,
+        evt.endTime
+      )}) — Priority: ${evt.priority}`;
+    });
+
+    return {
+      briefingId: createId('briefing'),
+      briefingDate: todayIso,
+      summaryText: lines.join('\n'),
+      isOfflineFallback: true,
+      createdAt: new Date().toISOString(),
+    };
   };
 
-  const handleAddTimelineEvent = (event: TimelineEvent) => {
-    setTimelineEvents((prev) => [event, ...prev]);
-    showToast(t.toastSlotAdded);
+  const handleGenerateBriefing = async () => {
+    // Empty Plan Guard
+    if (confirmedEvents.length === 0) {
+      showToast('No confirmed schedule found. Please upload a .pdf or .ics file first.', 'warning');
+      return;
+    }
+
+    // Offline / AI Error graceful degradation
+    if (simulateOfflineError || !navigator.onLine) {
+      const fallback = buildOfflineFallbackBriefing();
+      const updated = upsertDailyBriefing(briefings, fallback);
+      setBriefings(updated);
+      showToast('Offline mode active: showing cached local priorities.', 'warning');
+      return;
+    }
+
+    setIsGeneratingBriefing(true);
+    try {
+      const windowEvents = getEventsForBriefingWindow(confirmedEvents, todayIso);
+      const anonymizedPayload = windowEvents.map((evt) => ({
+        title: evt.title,
+        eventType: evt.eventType,
+        eventDate: evt.eventDate,
+        startTime: evt.startTime,
+        endTime: evt.endTime,
+        priority: evt.priority,
+      }));
+
+      const response = await fetch('/api/morning-briefing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          events: anonymizedPayload,
+          todayDate: todayIso,
+        }),
+      });
+
+      const payload = (await response.json().catch(() => ({}))) as {
+        summaryText?: string;
+        error?: string;
+      };
+
+      if (!response.ok || !payload.summaryText) {
+        const fallback = buildOfflineFallbackBriefing();
+        const updated = upsertDailyBriefing(briefings, fallback);
+        setBriefings(updated);
+        showToast('AI service unavailable. Showing cached local schedule.', 'warning');
+        return;
+      }
+
+      const nextBriefing: DailyBriefing = {
+        briefingId: createId('briefing'),
+        briefingDate: todayIso,
+        summaryText: payload.summaryText,
+        isOfflineFallback: false,
+        createdAt: new Date().toISOString(),
+      };
+
+      const updated = upsertDailyBriefing(briefings, nextBriefing);
+      setBriefings(updated);
+      showToast('Daily morning briefing updated.');
+    } catch {
+      const fallback = buildOfflineFallbackBriefing();
+      const updated = upsertDailyBriefing(briefings, fallback);
+      setBriefings(updated);
+      showToast('AI service unavailable. Showing cached local schedule.', 'warning');
+    } finally {
+      setIsGeneratingBriefing(false);
+    }
   };
 
-  // ==========================================
-  // MORNING BRIEFING HANDLERS (RF03)
-  // ==========================================
-  const handleToggleBriefingBullet = (bulletId: string) => {
-    setBriefing((prev) => ({
-      ...prev,
-      bullets: prev.bullets.map((b) => (b.id === bulletId ? { ...b, completed: !b.completed } : b)),
-    }));
+  // =========================================================
+  // D) GDPR PERMANENT DATA PURGE
+  // =========================================================
+  const handleConfirmPurgeAll = () => {
+    purgeAllLocalData();
+    saveSourceDocuments([]);
+    saveAcademicEvents([]);
+    saveDailyBriefings([]);
+    purgeAllLocalData();
+
+    setDocuments([]);
+    setConfirmedEvents([]);
+    setBriefings([]);
+    setPendingDocument(null);
+    setDraftEvents([]);
+    setPurgeModalOpen(false);
+    setActiveView('timeline');
+    setActiveStage(5);
+    showToast('All local data has been permanently purged.', 'info');
   };
 
-  const handleUpdateDeliveryTime = (time: string) => {
-    setBriefing((prev) => ({ ...prev, deliveryTime: time }));
-  };
+  const verifyingDocName = useMemo(() => {
+    if (!verifyingEvent?.documentId) return null;
+    if (pendingDocument?.documentId === verifyingEvent.documentId) {
+      return pendingDocument.fileName;
+    }
+    return documents.find((d) => d.documentId === verifyingEvent.documentId)?.fileName ?? null;
+  }, [verifyingEvent, pendingDocument, documents]);
 
-  // ==========================================
-  // SOURCE VERIFICATION & GLITCH REPAIR (RF05 & Scenario 2)
-  // ==========================================
-  const handleVerifySourceGlitchFix = () => {
-    // Re-analyzes files and restores state
-    setMaterials(INITIAL_MATERIALS);
-    setTimelineEvents(INITIAL_TIMELINE_EVENTS);
-    setDrafts(INITIAL_DRAFT_EVENTS);
-    setBriefing(INITIAL_MORNING_BRIEFING);
-    setIsScheduleConfirmed(true);
-    setIsGlitchActive(false);
-
-    showToast(t.toastVerifiedSuccess, 'success');
-  };
-
-  // ==========================================
-  // GDPR SINGLE-TAP DATA PURGE (RF06 / Screen E07)
-  // ==========================================
-  const handlePurgeAllData = () => {
-    sqliteDb.purgeAllData();
-    setMaterials([]);
-    setDeadlines([]);
-    setDrafts([]);
-    setTimelineEvents([]);
-    setAuditLogs([]);
-    setIsScheduleConfirmed(false);
-    showToast(
-      language === 'pt'
-        ? 'Todos os dados locais foram purgados da base de dados SQLite (Conformidade RGPD).'
-        : 'All local data purged from local SQLite cache (GDPR Compliance).',
-      'warning'
-    );
-  };
-
-  // ==========================================
-  // TEST SCENARIOS FOR EVALUATION
-  // ==========================================
-  const handleLoadScenario1 = () => {
-    setMaterials(INITIAL_MATERIALS);
-    setTimelineEvents(INITIAL_TIMELINE_EVENTS);
-    setDrafts(INITIAL_DRAFT_EVENTS);
-    setBriefing(INITIAL_MORNING_BRIEFING);
-    setAuditLogs(INITIAL_AUDIT_LOGS);
-    setIsScheduleConfirmed(true);
-    setIsGlitchActive(false);
-    setActiveTab('briefing');
-    showToast(t.toastScenario1, 'success');
-  };
-
-  const handleTriggerScenario2Glitch = () => {
-    setIsGlitchActive(true);
-    setActiveTab('briefing');
-    showToast(t.toastScenario2, 'warning');
-  };
-
-  const handleClearAll = () => {
-    setMaterials([]);
-    setTimelineEvents([]);
-    setDrafts([]);
-    setIsScheduleConfirmed(false);
-    setIsGlitchActive(false);
-    setActiveTab('briefing');
-    showToast(t.toastRn02, 'info');
-  };
-
-  const handleResetDefaults = () => {
-    setMaterials(INITIAL_MATERIALS);
-    setTimelineEvents(INITIAL_TIMELINE_EVENTS);
-    setDrafts(INITIAL_DRAFT_EVENTS);
-    setBriefing(INITIAL_MORNING_BRIEFING);
-    setAuditLogs(INITIAL_AUDIT_LOGS);
-    setIsScheduleConfirmed(true);
-    setIsGlitchActive(false);
-    setIsOfflineMode(false);
-    showToast(t.toastReset);
-  };
+  const deletingDocLinkedCount = useMemo(() => {
+    if (!deletingDocument) return 0;
+    return confirmedEvents.filter((e) => e.documentId === deletingDocument.documentId).length;
+  }, [deletingDocument, confirmedEvents]);
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans w-full max-w-full overflow-x-hidden">
-      {/* Test Scenario Toolbar for Acceptance Testing */}
-      <TestScenarioBar
-        onLoadScenario1={handleLoadScenario1}
-        onTriggerScenario2Glitch={handleTriggerScenario2Glitch}
-        onClearAll={handleClearAll}
-        onResetDefaults={handleResetDefaults}
-        isGlitchActive={isGlitchActive}
-        activeTab={activeTab}
-        t={t}
-      />
-
-      {/* Primary Top Bar (Responsive 2-Tier, No Mobile Container Overflow) */}
+    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
       <Header
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        isScheduleConfirmed={isScheduleConfirmed}
-        materialsCount={materials.length}
-        uncommittedDraftsCount={uncommittedDraftsCount}
-        language={language}
-        setLanguage={(newLang) => {
-          setLanguage(newLang);
+        activeView={activeView}
+        onSelectView={handleSelectView}
+        simulateOfflineError={simulateOfflineError}
+        onToggleSimulateOfflineError={(next) => {
+          setSimulateOfflineError(next);
           showToast(
-            newLang === 'pt' ? 'Idioma alterado para Português (PT)' : 'Language switched to English (EN)',
-            'info'
+            next
+              ? 'Simulated Offline / AI Error enabled.'
+              : 'Simulated Offline / AI Error disabled.',
+            next ? 'warning' : 'info'
           );
         }}
-        t={t}
-        isOfflineMode={isOfflineMode}
+        hasPendingDrafts={draftEvents.length > 0}
       />
 
-      {/* Floating Toast Notification */}
-      {toast && (
-        <div className="fixed bottom-20 right-4 sm:bottom-24 sm:right-6 z-50 max-w-md animate-in slide-in-from-bottom-3 duration-200">
-          <div
-            className={`p-4 rounded-xl shadow-lg border flex items-start gap-3 ${
-              toast.type === 'error'
-                ? 'bg-rose-900 text-white border-rose-800'
-                : toast.type === 'warning'
-                ? 'bg-amber-900 text-white border-amber-800'
-                : toast.type === 'info'
-                ? 'bg-slate-900 text-white border-slate-800'
-                : 'bg-emerald-900 text-white border-emerald-800'
-            }`}
-          >
-            {toast.type === 'error' || toast.type === 'warning' ? (
-              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-amber-300" />
-            ) : (
-              <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5 text-emerald-300" />
-            )}
-            <div className="text-xs sm:text-sm font-medium flex-1">
-              {toast.message}
-            </div>
-            <button
-              onClick={() => setToast(null)}
-              className="text-white/60 hover:text-white p-1"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      )}
+      <WorkflowStepper
+        activeStage={activeStage}
+        hasDrafts={draftEvents.length > 0}
+        hasConfirmedEvents={confirmedEvents.length > 0}
+        onSelectStage={handleSelectStage}
+      />
 
-      {/* Main Viewport Content */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-6 sm:py-8 pb-24 sm:pb-28">
-        {/* Screen E01: Materials & Calendars Import (RF01 / UC-01) */}
-        {activeTab === 'materials' && (
-          <MaterialsSection
-            materials={materials}
-            deadlines={deadlines}
-            onAddMaterial={handleAddMaterial}
-            onDeleteMaterial={handleDeleteMaterial}
-            onAddDeadline={(d) => setDeadlines([...deadlines, d])}
-            onDeleteDeadline={(id) => setDeadlines(deadlines.filter((x) => x.id !== id))}
-            onAddDraftsFromExtraction={handleAddDraftsFromExtraction}
-            onNavigateToDrafts={() => setActiveTab('drafts')}
-            onNavigateToSchedule={() => setActiveTab('timeline')}
-            isScheduleConfirmed={isScheduleConfirmed}
-            t={t}
-            language={language}
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        {activeView === 'upload' ? (
+          <UploadIngestionView
+            pendingDocument={pendingDocument}
+            draftEvents={draftEvents}
+            activeStage={activeStage}
+            simulateOfflineError={simulateOfflineError}
+            onStageChange={setActiveStage}
+            onDraftsParsed={handleDraftsParsed}
+            onUpdateDraft={handleUpdateDraft}
+            onRemoveDraft={handleRemoveDraft}
+            onConfirmEvents={handleConfirmEvents}
+            onCancelDrafts={handleCancelDrafts}
+            onInspectSource={(evt) => setVerifyingEvent(evt)}
           />
-        )}
-
-        {/* Screen E02: Draft Preview & Human-in-the-Loop Control (RN01 / RF05) */}
-        {activeTab === 'drafts' && (
-          <DraftPreviewSection
-            drafts={drafts}
-            onConfirmAllEvents={handleConfirmAllEvents}
-            onConfirmSingleEvent={handleConfirmSingleEvent}
-            onDeleteDraft={handleDeleteDraft}
-            onEditDraft={(draft) => {
-              showToast(language === 'pt' ? `Rascunho "${draft.title}" editado.` : `Draft "${draft.title}" updated.`);
+        ) : (
+          <TimelineDashboard
+            documents={documents}
+            confirmedEvents={confirmedEvents}
+            todayBriefing={todayBriefing}
+            isGeneratingBriefing={isGeneratingBriefing}
+            simulateOfflineError={simulateOfflineError}
+            onGenerateBriefing={handleGenerateBriefing}
+            onNavigateToUpload={() => handleSelectView('upload')}
+            onLoadSampleData={handleLoadSampleData}
+            onOpenAddEvent={() => {
+              setEditingEvent(null);
+              setEventModalOpen(true);
             }}
-            onOpenSourceVerification={(modalData) => setVerificationModal(modalData)}
-            onNavigateToTimeline={() => setActiveTab('timeline')}
-            confirmedCount={timelineEvents.length}
-            t={t}
-            language={language}
-          />
-        )}
-
-        {/* Screen E03 / E04: Unified Dynamic Timeline (RF02 / RF04) */}
-        {activeTab === 'timeline' && (
-          <UnifiedTimelineSection
-            events={timelineEvents}
-            sqliteStats={sqliteStats}
-            onUpdateEvent={handleUpdateTimelineEvent}
-            onDeleteEvent={handleDeleteTimelineEvent}
-            onAddEvent={handleAddTimelineEvent}
-            onOpenSourceVerification={(modalData) => setVerificationModal(modalData)}
-            t={t}
-            language={language}
-          />
-        )}
-
-        {/* Screen E05: Morning Text Briefing & Daily Plan (RF03 / UC-03) */}
-        {activeTab === 'briefing' && (
-          <div>
-            {/* Rule RN02 Empty State Check */}
-            {materials.length === 0 ? (
-              <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-xs max-w-2xl mx-auto my-6">
-                <div className="w-16 h-16 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600 mx-auto mb-4">
-                  <ShieldAlert className="w-8 h-8" />
-                </div>
-                <h3 className="text-xl font-bold text-slate-900 mb-2">
-                  {t.rn02NoFilesTitle}
-                </h3>
-                <p className="text-sm text-slate-600 mb-6 leading-relaxed">
-                  {t.rn02NoFilesDesc}
-                </p>
-                <button
-                  onClick={() => setActiveTab('materials')}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors shadow-xs"
-                >
-                  <BookOpen className="w-4 h-4" />
-                  <span>{t.goToMaterialsBtn}</span>
-                </button>
-              </div>
-            ) : isGlitchActive ? (
-              /* Scenario 2 Glitch State with "No tasks scheduled for today." & "Verify source" */
-              <div className="bg-white rounded-2xl border border-amber-300 p-8 shadow-xs max-w-3xl mx-auto text-center space-y-4">
-                <div className="w-16 h-16 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600 mx-auto">
-                  <AlertCircle className="w-8 h-8" />
-                </div>
-                <h2 className="text-2xl font-bold text-slate-900 tracking-tight">
-                  No tasks scheduled for today.
-                </h2>
-                <p className="text-sm text-slate-600 max-w-md mx-auto">
-                  {t.glitchDesc}
-                </p>
-                <div className="pt-2">
-                  <button
-                    onClick={handleVerifySourceGlitchFix}
-                    className="px-6 py-3 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition-all shadow-md inline-flex items-center gap-2"
-                  >
-                    <span>Verify source</span>
-                  </button>
-                </div>
-                <p className="text-xs text-slate-400">
-                  {t.glitchNotice}
-                </p>
-              </div>
-            ) : (
-              <MorningBriefingSection
-                briefing={briefing}
-                isOfflineMode={isOfflineMode}
-                onToggleOfflineMode={(offline) => setIsOfflineMode(offline)}
-                onToggleBullet={handleToggleBriefingBullet}
-                onUpdateDeliveryTime={handleUpdateDeliveryTime}
-                onOpenSourceVerification={(modalData) => setVerificationModal(modalData)}
-                onNavigateToTimeline={() => setActiveTab('timeline')}
-                t={t}
-                language={language}
-              />
-            )}
-          </div>
-        )}
-
-        {/* Screen E07: Privacy & Data Purging (RF06) */}
-        {activeTab === 'privacy' && (
-          <PrivacyPurgeSection
-            auditLogs={auditLogs}
-            sqliteStats={sqliteStats}
-            onPurgeAllData={handlePurgeAllData}
-            onResetSampleData={handleResetDefaults}
-            t={t}
-            language={language}
+            onOpenEditEvent={(evt) => {
+              setEditingEvent(evt);
+              setEventModalOpen(true);
+            }}
+            onDeleteEvent={handleDeleteEvent}
+            onVerifySource={(evt) => setVerifyingEvent(evt)}
+            onRequestDeleteDocument={(doc) => setDeletingDocument(doc)}
           />
         )}
       </main>
 
-      {/* 4. ERGONOMIC FIXED BOTTOM-RIGHT ACTION DOCK (Fix for DEF-04) */}
-      <div className="fixed bottom-4 right-4 sm:bottom-6 sm:right-6 z-40 flex items-center gap-2.5 p-2 bg-white/95 backdrop-blur-md rounded-2xl shadow-xl border border-slate-200/90 animate-in fade-in slide-in-from-bottom-2">
-        {isGlitchActive ? (
-          <button
-            onClick={handleVerifySourceGlitchFix}
-            className="flex items-center gap-2 px-5 py-2.5 text-xs sm:text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-98 rounded-xl shadow-md shadow-indigo-600/30 transition-all"
-          >
-            <CheckCircle2 className="w-4 h-4" />
-            <span>Verify source</span>
-          </button>
-        ) : uncommittedDraftsCount > 0 ? (
-          <>
-            {/* Secondary Action: Clear Outlined Button per DEF-04 */}
-            <button
-              onClick={() => {
-                const firstDraft = drafts.find((d) => !d.isConfirmed) || drafts[0];
-                if (firstDraft) {
-                  setVerificationModal({
-                    isOpen: true,
-                    eventTitle: firstDraft.title,
-                    subject: firstDraft.subject,
-                    sourceDocumentName: firstDraft.sourceDocumentName,
-                    publicationDate: firstDraft.publicationDate,
-                    extractedDueDate: `${firstDraft.dueDate} às ${firstDraft.time}`,
-                    dateReasoning: firstDraft.dateReasoning,
-                    confidenceScore: firstDraft.confidenceScore,
-                    highlightPhrase: firstDraft.highlightPhrase,
-                    fullSnippet: firstDraft.sourceSnippet,
-                    documentType: firstDraft.sourceDocumentName.endsWith('.docx') ? 'docx' : 'pdf',
-                  });
-                }
-              }}
-              className="flex items-center gap-1.5 px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition-colors shadow-2xs"
-            >
-              <Search className="w-4 h-4 text-indigo-600" />
-              <span>Verify Source</span>
-            </button>
-
-            {/* Primary Action: Solid Accent Button ("Confirm Events") per DEF-04 */}
-            <button
-              onClick={handleConfirmAllEvents}
-              className="flex items-center gap-2 px-4 sm:px-5 py-2.5 text-xs sm:text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-98 rounded-xl shadow-lg shadow-indigo-600/30 ring-2 ring-indigo-400/40 transition-all"
-            >
-              <Check className="w-4 h-4" />
-              <span>
-                {language === 'pt'
-                  ? `Confirmar Horário (${uncommittedDraftsCount})`
-                  : `Confirm Events (${uncommittedDraftsCount})`}
-              </span>
-            </button>
-          </>
-        ) : (
-          <>
-            {/* Secondary Action: Clear Outlined Button per DEF-04 */}
-            <button
-              onClick={() => {
-                const sample = drafts[0];
-                if (sample) {
-                  setVerificationModal({
-                    isOpen: true,
-                    eventTitle: sample.title,
-                    subject: sample.subject,
-                    sourceDocumentName: sample.sourceDocumentName,
-                    publicationDate: sample.publicationDate,
-                    extractedDueDate: `${sample.dueDate} às ${sample.time}`,
-                    dateReasoning: sample.dateReasoning,
-                    confidenceScore: sample.confidenceScore,
-                    highlightPhrase: sample.highlightPhrase,
-                    fullSnippet: sample.sourceSnippet,
-                    documentType: sample.sourceDocumentName.endsWith('.docx') ? 'docx' : 'pdf',
-                  });
-                }
-              }}
-              className="flex items-center gap-1.5 px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition-colors shadow-2xs"
-            >
-              <Search className="w-3.5 h-3.5 text-indigo-600" />
-              <span>Verify Source</span>
-            </button>
-
-            {/* Primary Action: Solid Accent Button */}
-            {activeTab !== 'briefing' ? (
-              <button
-                onClick={() => setActiveTab('briefing')}
-                className="flex items-center gap-1.5 px-4 py-2 text-xs sm:text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-md shadow-indigo-600/25 transition-all"
-              >
-                <span>{language === 'pt' ? 'Ver Resumo Matinal' : 'View Briefing'}</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            ) : (
-              <button
-                onClick={() => setActiveTab('timeline')}
-                className="flex items-center gap-1.5 px-4 py-2 text-xs sm:text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-md shadow-indigo-600/25 transition-all"
-              >
-                <span>{language === 'pt' ? 'Ver Cronograma' : 'View Timeline'}</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* Screen E06: Source Verification Modal (Contextual Audit) */}
-      <SourceVerificationModal
-        data={verificationModal}
-        onClose={() => setVerificationModal((prev) => ({ ...prev, isOpen: false }))}
-        t={t}
-        language={language}
-      />
-
-      {/* Rule RN04: Recalculation Confirmation Modal */}
-      <FileChangeConfirmModal
-        isOpen={pendingFileChange.isOpen}
-        changeType={pendingFileChange.changeType}
-        fileName={pendingFileChange.fileName}
-        onConfirm={handleConfirmFileChangeRecalculation}
-        onCancel={handleCancelFileChangeRecalculation}
-        t={t}
-      />
-
-      {/* Clean Footer */}
-      <footer className="border-t border-slate-200 bg-white py-6 mt-auto">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-slate-700">{t.appName}</span>
-            <span>·</span>
-            <span>{t.footerMemory}</span>
-            <span>·</span>
-            <span className="font-medium text-slate-600">
-              {language === 'pt' ? '🇵🇹 Português (Portugal)' : '🇬🇧 English (Global)'}
-            </span>
+      {/* Footer with GDPR Purge Control */}
+      <footer className="bg-white border-t border-slate-200 mt-auto">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500">
+          <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
+            <span className="font-semibold text-slate-800">SmartCampus</span>
+            <span aria-hidden="true">·</span>
+            <span>Local-first academic planner</span>
+            <span aria-hidden="true">·</span>
+            <span>Accepts .pdf and .ics</span>
           </div>
-          <div>{t.footerSupportedFormats}</div>
+
+          <button
+            type="button"
+            onClick={() => setPurgeModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-700 bg-white hover:bg-red-50 border border-red-200 rounded-lg transition-colors whitespace-nowrap"
+          >
+            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Purge All Data (GDPR)</span>
+          </button>
         </div>
       </footer>
+
+      {/* Modals */}
+      <EventFormModal
+        isOpen={eventModalOpen}
+        editingEvent={editingEvent}
+        onClose={() => {
+          setEventModalOpen(false);
+          setEditingEvent(null);
+        }}
+        onSave={handleSaveEvent}
+      />
+
+      <SourceSnippetModal
+        event={verifyingEvent}
+        documentName={verifyingDocName}
+        onClose={() => setVerifyingEvent(null)}
+        onEditEvent={(evt) => {
+          setEditingEvent(evt);
+          setEventModalOpen(true);
+        }}
+      />
+
+      <DeleteDocumentModal
+        document={deletingDocument}
+        linkedEventsCount={deletingDocLinkedCount}
+        onClose={() => setDeletingDocument(null)}
+        onDeleteDocumentOnly={handleDeleteDocumentOnly}
+        onDeleteWithLinkedEvents={handleDeleteDocumentWithEvents}
+      />
+
+      <PurgeConfirmModal
+        isOpen={purgeModalOpen}
+        onClose={() => setPurgeModalOpen(false)}
+        onConfirmPurge={handleConfirmPurgeAll}
+      />
+
+      {/* Toast Notification */}
+      {toast && (
+        <div
+          role="status"
+          className="fixed bottom-4 right-4 z-50 max-w-sm bg-slate-900 text-white px-4 py-3 rounded-xl shadow-lg border border-slate-800 flex items-center gap-2.5"
+        >
+          {toast.tone === 'warning' ? (
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" aria-hidden="true" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" aria-hidden="true" />
+          )}
+          <p className="text-xs sm:text-sm font-medium flex-1">{toast.text}</p>
+          <button
+            type="button"
+            onClick={() => setToast(null)}
+            aria-label="Dismiss notification"
+            className="text-slate-400 hover:text-white p-1"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
