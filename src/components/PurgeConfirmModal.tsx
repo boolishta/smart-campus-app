@@ -19,13 +19,20 @@ export const PurgeConfirmModal: React.FC<PurgeConfirmModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="purge-modal-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-zinc-950/40 backdrop-blur-xs"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
-      <div className="bg-white rounded-xl border border-slate-200 max-w-md w-full shadow-xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+      <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl border-t sm:border border-zinc-200 shadow-xl overflow-hidden pb-safe">
+        <div className="sm:hidden flex justify-center pt-2.5 pb-1">
+          <div className="w-9 h-1 rounded-full bg-zinc-200" />
+        </div>
+
+        <div className="px-5 py-3.5 border-b border-zinc-100 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 text-red-600" aria-hidden="true" />
-            <h2 id="purge-modal-title" className="text-base font-semibold text-slate-900">
+            <h2 id="purge-modal-title" className="text-base font-semibold text-zinc-950">
               Purge All Data (GDPR)
             </h2>
           </div>
@@ -33,34 +40,32 @@ export const PurgeConfirmModal: React.FC<PurgeConfirmModalProps> = ({
             type="button"
             onClick={onClose}
             aria-label="Close confirmation"
-            className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
+            className="w-8 h-8 inline-flex items-center justify-center rounded-full text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="p-6 space-y-2.5">
-          <p className="text-sm text-slate-700 leading-relaxed">
+        <div className="p-5 space-y-2">
+          <p className="text-sm text-zinc-700 leading-relaxed">
             This will permanently delete all uploaded file records, confirmed timeline events, and
-            saved daily morning briefings from your browser&apos;s local storage.
+            saved morning briefings from your browser&apos;s local storage.
           </p>
-          <p className="text-xs font-medium text-red-700">
-            This action cannot be undone.
-          </p>
+          <p className="text-xs font-medium text-red-600">This action cannot be undone.</p>
         </div>
 
-        <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-3">
+        <div className="px-5 py-4 bg-zinc-50/80 border-t border-zinc-100 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 text-sm font-medium text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-colors"
+            className="w-full sm:w-auto px-4 py-2.5 text-sm font-medium text-zinc-700 bg-white hover:bg-zinc-100 border border-zinc-200 rounded-xl transition-colors"
           >
             Cancel
           </button>
           <button
             type="button"
             onClick={onConfirmPurge}
-            className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors"
           >
             <Trash2 className="w-4 h-4" aria-hidden="true" />
             <span>Purge All Data</span>

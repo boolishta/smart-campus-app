@@ -4,17 +4,15 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import { CheckCircle2, AlertCircle, Trash2, X } from 'lucide-react';
+import { CheckCircle2, AlertCircle, X } from 'lucide-react';
 import {
   AcademicEvent,
   AcademicEventType,
   DailyBriefing,
   EventPriority,
   SourceDocument,
-  WorkflowStage,
 } from './types';
 import {
-  confirmAndDeduplicateEvents,
   createSampleDataset,
   loadAcademicEvents,
   loadDailyBriefings,
@@ -26,19 +24,26 @@ import {
   upsertDailyBriefing,
 } from './utils/storage';
 import {
+  applyDraftResolutions,
+  DraftResolutionChoice,
+} from './utils/deduplication';
+import {
   formatTimeRange,
   getCountdownInfo,
   getEventsForBriefingWindow,
   getTodayIsoDate,
 } from './utils/dateUtils';
-import { ActiveView, Header } from './components/Header';
-import { WorkflowStepper } from './components/WorkflowStepper';
-import { UploadIngestionView } from './components/UploadIngestionView';
-import { TimelineDashboard } from './components/TimelineDashboard';
+import { ActiveTab, Header } from './components/Header';
+import { BottomNav } from './components/BottomNav';
+import { BriefingScreen } from './components/BriefingScreen';
+import { TimelineScreen } from './components/TimelineScreen';
+import { DocumentsScreen } from './components/DocumentsScreen';
+import { EventDetailSheet } from './components/EventDetailSheet';
 import { EventFormModal } from './components/EventFormModal';
 import { SourceSnippetModal } from './components/SourceSnippetModal';
 import { DeleteDocumentModal } from './components/DeleteDocumentModal';
 import { PurgeConfirmModal } from './components/PurgeConfirmModal';
+import { SettingsSheet } from './components/SettingsSheet';
 
 function createId(prefix: string): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -54,28 +59,30 @@ interface ToastMessage {
 }
 
 export default function App() {
-  // Real browser persistence (survives page reload without overwriting)
+  // Local-first browser persistence
   const [documents, setDocuments] = useState<SourceDocument[]>(() => loadSourceDocuments());
   const [confirmedEvents, setConfirmedEvents] = useState<AcademicEvent[]>(() =>
     loadAcademicEvents()
   );
   const [briefings, setBriefings] = useState<DailyBriefing[]>(() => loadDailyBriefings());
 
-  // Uncommitted ingestion session state (never written to localStorage until Confirm Events)
+  // Uncommitted ingestion session state
   const [pendingDocument, setPendingDocument] = useState<SourceDocument | null>(null);
   const [draftEvents, setDraftEvents] = useState<AcademicEvent[]>([]);
 
-  // Navigation & 5-Stage Stepper state
-  const [activeView, setActiveView] = useState<ActiveView>('timeline');
-  const [activeStage, setActiveStage] = useState<WorkflowStage>(5);
+  // 3-screen mobile-first navigation (default: Briefing)
+  const [activeTab, setActiveTab] = useState<ActiveTab>('briefing');
 
-  // Live defense demo toggle
+  // Offline / AI error simulation & briefing state
   const [simulateOfflineError, setSimulateOfflineError] = useState<boolean>(false);
   const [isGeneratingBriefing, setIsGeneratingBriefing] = useState<boolean>(false);
 
-  // Modals
+  // Sheets & Modals
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+  const [selectedEvent, setSelectedEvent] = useState<AcademicEvent | null>(null);
   const [eventModalOpen, setEventModalOpen] = useState<boolean>(false);
   const [editingEvent, setEditingEvent] = useState<AcademicEvent | null>(null);
+  const [editingIsDraft, setEditingIsDraft] = useState<boolean>(false);
   const [verifyingEvent, setVerifyingEvent] = useState<AcademicEvent | null>(null);
   const [deletingDocument, setDeletingDocument] = useState<SourceDocument | null>(null);
   const [purgeModalOpen, setPurgeModalOpen] = useState<boolean>(false);
@@ -87,7 +94,7 @@ export default function App() {
     setToast({ id, text, tone });
     window.setTimeout(() => {
       setToast((current) => (current?.id === id ? null : current));
-    }, 4000);
+    }, 3800);
   };
 
   const todayIso = getTodayIsoDate();
@@ -96,41 +103,13 @@ export default function App() {
     [briefings, todayIso]
   );
 
-  // View & Stepper navigation
-  const handleSelectView = (view: ActiveView) => {
-    setActiveView(view);
-    if (view === 'timeline') {
-      setActiveStage(5);
-    } else if (pendingDocument && draftEvents.length > 0) {
-      setActiveStage(2);
-    } else {
-      setActiveStage(1);
-    }
-  };
-
-  const handleSelectStage = (stage: WorkflowStage) => {
-    setActiveStage(stage);
-    if (stage === 5) {
-      setActiveView('timeline');
-    } else {
-      setActiveView('upload');
-    }
-  };
-
   // =========================================================
-  // A) UPLOAD & HUMAN-IN-THE-LOOP INGESTION
+  // A) DOCUMENT INGESTION & HUMAN-IN-THE-LOOP DRAFTS
   // =========================================================
   const handleDraftsParsed = (doc: SourceDocument, drafts: AcademicEvent[]) => {
     setPendingDocument(doc);
     setDraftEvents(drafts);
-    setActiveView('upload');
-    setActiveStage(2);
-  };
-
-  const handleUpdateDraft = (updated: AcademicEvent) => {
-    setDraftEvents((prev) =>
-      prev.map((d) => (d.eventId === updated.eventId ? updated : d))
-    );
+    setActiveTab('documents');
   };
 
   const handleRemoveDraft = (eventId: string) => {
@@ -138,18 +117,18 @@ export default function App() {
       const next = prev.filter((d) => d.eventId !== eventId);
       if (next.length === 0) {
         setPendingDocument(null);
-        setActiveStage(1);
       }
       return next;
     });
   };
 
-  const handleConfirmEvents = () => {
+  const handleConfirmEvents = (resolutions: Record<string, DraftResolutionChoice>) => {
     if (!pendingDocument || draftEvents.length === 0) return;
 
-    const { merged, addedCount, skippedCount } = confirmAndDeduplicateEvents(
+    const { merged, addedCount, mergedCount, skippedCount } = applyDraftResolutions(
       confirmedEvents,
-      draftEvents
+      draftEvents,
+      resolutions
     );
 
     const confirmedDoc: SourceDocument = {
@@ -165,30 +144,27 @@ export default function App() {
     setConfirmedEvents(merged);
     setPendingDocument(null);
     setDraftEvents([]);
-    setActiveView('timeline');
-    setActiveStage(5);
+    setActiveTab('timeline');
 
-    if (skippedCount > 0) {
-      showToast(
-        `Saved ${addedCount} ${addedCount === 1 ? 'event' : 'events'} locally (${skippedCount} ${
-          skippedCount === 1 ? 'duplicate' : 'duplicates'
-        } skipped).`
-      );
-    } else {
-      showToast(`Saved ${addedCount} ${addedCount === 1 ? 'event' : 'events'} to your timeline.`);
-    }
+    const parts: string[] = [];
+    if (addedCount > 0) parts.push(`${addedCount} added`);
+    if (mergedCount > 0) parts.push(`${mergedCount} merged`);
+    if (skippedCount > 0) parts.push(`${skippedCount} skipped`);
+
+    showToast(
+      parts.length > 0 ? `Timeline updated: ${parts.join(', ')}.` : 'No new events were added.',
+      parts.length > 0 ? 'success' : 'info'
+    );
   };
 
   const handleCancelDrafts = () => {
-    // Discard drafts with ZERO writes to localStorage
     setPendingDocument(null);
     setDraftEvents([]);
-    setActiveStage(1);
-    showToast('Temporary drafts discarded. No changes were saved.', 'info');
+    showToast('Drafts discarded.', 'info');
   };
 
   // =========================================================
-  // B) TIMELINE FULL CRUD & UPLOADED FILE MANAGEMENT
+  // B) TIMELINE CRUD & UPLOADED FILE MANAGEMENT
   // =========================================================
   const handleSaveEvent = (data: {
     eventId?: string;
@@ -200,8 +176,32 @@ export default function App() {
     priority: EventPriority;
   }) => {
     const nowIso = new Date().toISOString();
-    let nextEvents: AcademicEvent[];
 
+    if (editingIsDraft && data.eventId) {
+      setDraftEvents((prev) =>
+        prev.map((d) =>
+          d.eventId === data.eventId
+            ? {
+                ...d,
+                title: data.title,
+                eventType: data.eventType,
+                eventDate: data.eventDate,
+                startTime: data.startTime,
+                endTime: data.endTime,
+                priority: data.priority,
+                updatedAt: nowIso,
+              }
+            : d
+        )
+      );
+      setEventModalOpen(false);
+      setEditingEvent(null);
+      setEditingIsDraft(false);
+      showToast('Draft updated.');
+      return;
+    }
+
+    let nextEvents: AcademicEvent[];
     if (data.eventId) {
       nextEvents = confirmedEvents.map((evt) =>
         evt.eventId === data.eventId
@@ -234,13 +234,14 @@ export default function App() {
         updatedAt: nowIso,
       };
       nextEvents = [...confirmedEvents, created];
-      showToast('Event added to your timeline.');
+      showToast('Event added.');
     }
 
     saveAcademicEvents(nextEvents);
     setConfirmedEvents(nextEvents);
     setEventModalOpen(false);
     setEditingEvent(null);
+    setEditingIsDraft(false);
   };
 
   const handleDeleteEvent = (eventId: string) => {
@@ -260,7 +261,7 @@ export default function App() {
     setDocuments(nextDocs);
     setConfirmedEvents(nextEvents);
     setDeletingDocument(null);
-    showToast('File removed. Timeline events were kept.', 'info');
+    showToast('File removed. Timeline events kept.', 'info');
   };
 
   const handleDeleteDocumentWithEvents = (documentId: string) => {
@@ -281,13 +282,13 @@ export default function App() {
     saveAcademicEvents(sample.events);
     setDocuments(sample.documents);
     setConfirmedEvents(sample.events);
-    showToast('Sample course schedule loaded and saved locally.');
+    showToast('Sample schedule loaded.');
   };
 
   // =========================================================
-  // C) DAILY MORNING BRIEFING (08:00 AM)
+  // C) DAILY MORNING BRIEFING
   // =========================================================
-  const buildOfflineFallbackBriefing = (): DailyBriefing => {
+  const buildFallbackBriefing = (reason: 'offline' | 'ai_error'): DailyBriefing => {
     const upcoming = getEventsForBriefingWindow(confirmedEvents, todayIso).slice(0, 3);
     const lines = upcoming.map((evt, idx) => {
       const countdown = getCountdownInfo(evt.eventDate, todayIso);
@@ -302,23 +303,22 @@ export default function App() {
       briefingDate: todayIso,
       summaryText: lines.join('\n'),
       isOfflineFallback: true,
+      fallbackReason: reason,
       createdAt: new Date().toISOString(),
     };
   };
 
   const handleGenerateBriefing = async () => {
-    // Empty Plan Guard
     if (confirmedEvents.length === 0) {
-      showToast('No confirmed schedule found. Please upload a .pdf or .ics file first.', 'warning');
+      showToast('Upload a .pdf or .ics file first.', 'warning');
       return;
     }
 
-    // Offline / AI Error graceful degradation
     if (simulateOfflineError || !navigator.onLine) {
-      const fallback = buildOfflineFallbackBriefing();
+      const fallback = buildFallbackBriefing('offline');
       const updated = upsertDailyBriefing(briefings, fallback);
       setBriefings(updated);
-      showToast('Offline mode active: showing cached local priorities.', 'warning');
+      showToast('Offline mode: showing cached priorities.', 'warning');
       return;
     }
 
@@ -349,10 +349,10 @@ export default function App() {
       };
 
       if (!response.ok || !payload.summaryText) {
-        const fallback = buildOfflineFallbackBriefing();
+        const fallback = buildFallbackBriefing('ai_error');
         const updated = upsertDailyBriefing(briefings, fallback);
         setBriefings(updated);
-        showToast('AI service unavailable. Showing cached local schedule.', 'warning');
+        showToast(payload.error || 'AI service unavailable. Showing cached priorities.', 'warning');
         return;
       }
 
@@ -361,17 +361,18 @@ export default function App() {
         briefingDate: todayIso,
         summaryText: payload.summaryText,
         isOfflineFallback: false,
+        fallbackReason: null,
         createdAt: new Date().toISOString(),
       };
 
       const updated = upsertDailyBriefing(briefings, nextBriefing);
       setBriefings(updated);
-      showToast('Daily morning briefing updated.');
+      showToast('Morning briefing updated.');
     } catch {
-      const fallback = buildOfflineFallbackBriefing();
+      const fallback = buildFallbackBriefing('ai_error');
       const updated = upsertDailyBriefing(briefings, fallback);
       setBriefings(updated);
-      showToast('AI service unavailable. Showing cached local schedule.', 'warning');
+      showToast('AI service unavailable. Showing cached priorities.', 'warning');
     } finally {
       setIsGeneratingBriefing(false);
     }
@@ -392,19 +393,17 @@ export default function App() {
     setBriefings([]);
     setPendingDocument(null);
     setDraftEvents([]);
+    setSelectedEvent(null);
     setPurgeModalOpen(false);
-    setActiveView('timeline');
-    setActiveStage(5);
-    showToast('All local data has been permanently purged.', 'info');
+    setActiveTab('briefing');
+    showToast('All local data permanently purged.', 'info');
   };
 
-  const verifyingDocName = useMemo(() => {
-    if (!verifyingEvent?.documentId) return null;
-    if (pendingDocument?.documentId === verifyingEvent.documentId) {
-      return pendingDocument.fileName;
-    }
-    return documents.find((d) => d.documentId === verifyingEvent.documentId)?.fileName ?? null;
-  }, [verifyingEvent, pendingDocument, documents]);
+  const resolveDocumentName = (docId: string | null): string | null => {
+    if (!docId) return null;
+    if (pendingDocument?.documentId === docId) return pendingDocument.fileName;
+    return documents.find((d) => d.documentId === docId)?.fileName ?? null;
+  };
 
   const deletingDocLinkedCount = useMemo(() => {
     if (!deletingDocument) return 0;
@@ -412,109 +411,117 @@ export default function App() {
   }, [deletingDocument, confirmedEvents]);
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
+    <div className="min-h-screen flex flex-col bg-zinc-50 text-zinc-900">
       <Header
-        activeView={activeView}
-        onSelectView={handleSelectView}
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
         simulateOfflineError={simulateOfflineError}
-        onToggleSimulateOfflineError={(next) => {
-          setSimulateOfflineError(next);
-          showToast(
-            next
-              ? 'Simulated Offline / AI Error enabled.'
-              : 'Simulated Offline / AI Error disabled.',
-            next ? 'warning' : 'info'
-          );
-        }}
-        hasPendingDrafts={draftEvents.length > 0}
+        draftCount={draftEvents.length}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
-      <WorkflowStepper
-        activeStage={activeStage}
-        hasDrafts={draftEvents.length > 0}
-        hasConfirmedEvents={confirmedEvents.length > 0}
-        onSelectStage={handleSelectStage}
-      />
+      <main className="flex-1 max-w-2xl w-full mx-auto px-4 sm:px-6 pt-6 pb-24 md:pb-12">
+        {activeTab === 'briefing' && (
+          <BriefingScreen
+            confirmedEvents={confirmedEvents}
+            todayBriefing={todayBriefing}
+            isGenerating={isGeneratingBriefing}
+            simulateOfflineError={simulateOfflineError}
+            onGenerateBriefing={handleGenerateBriefing}
+            onNavigateToDocuments={() => setActiveTab('documents')}
+            onNavigateToTimeline={() => setActiveTab('timeline')}
+            onLoadSampleData={handleLoadSampleData}
+            onVerifySource={(evt) => setVerifyingEvent(evt)}
+          />
+        )}
 
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8">
-        {activeView === 'upload' ? (
-          <UploadIngestionView
+        {activeTab === 'timeline' && (
+          <TimelineScreen
+            confirmedEvents={confirmedEvents}
+            onNavigateToDocuments={() => setActiveTab('documents')}
+            onLoadSampleData={handleLoadSampleData}
+            onOpenAddEvent={() => {
+              setEditingEvent(null);
+              setEditingIsDraft(false);
+              setEventModalOpen(true);
+            }}
+            onSelectEvent={(evt) => setSelectedEvent(evt)}
+          />
+        )}
+
+        {activeTab === 'documents' && (
+          <DocumentsScreen
+            documents={documents}
+            confirmedEvents={confirmedEvents}
             pendingDocument={pendingDocument}
             draftEvents={draftEvents}
-            activeStage={activeStage}
             simulateOfflineError={simulateOfflineError}
-            onStageChange={setActiveStage}
             onDraftsParsed={handleDraftsParsed}
-            onUpdateDraft={handleUpdateDraft}
+            onEditDraft={(draft) => {
+              setEditingEvent(draft);
+              setEditingIsDraft(true);
+              setEventModalOpen(true);
+            }}
             onRemoveDraft={handleRemoveDraft}
             onConfirmEvents={handleConfirmEvents}
             onCancelDrafts={handleCancelDrafts}
             onInspectSource={(evt) => setVerifyingEvent(evt)}
-          />
-        ) : (
-          <TimelineDashboard
-            documents={documents}
-            confirmedEvents={confirmedEvents}
-            todayBriefing={todayBriefing}
-            isGeneratingBriefing={isGeneratingBriefing}
-            simulateOfflineError={simulateOfflineError}
-            onGenerateBriefing={handleGenerateBriefing}
-            onNavigateToUpload={() => handleSelectView('upload')}
-            onLoadSampleData={handleLoadSampleData}
-            onOpenAddEvent={() => {
-              setEditingEvent(null);
-              setEventModalOpen(true);
-            }}
-            onOpenEditEvent={(evt) => {
-              setEditingEvent(evt);
-              setEventModalOpen(true);
-            }}
-            onDeleteEvent={handleDeleteEvent}
-            onVerifySource={(evt) => setVerifyingEvent(evt)}
             onRequestDeleteDocument={(doc) => setDeletingDocument(doc)}
           />
         )}
       </main>
 
-      {/* Footer with GDPR Purge Control */}
-      <footer className="bg-white border-t border-slate-200 mt-auto">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500">
-          <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
-            <span className="font-semibold text-slate-800">SmartCampus</span>
-            <span aria-hidden="true">·</span>
-            <span>Local-first academic planner</span>
-            <span aria-hidden="true">·</span>
-            <span>Accepts .pdf and .ics</span>
-          </div>
+      <BottomNav
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+        draftCount={draftEvents.length}
+      />
 
-          <button
-            type="button"
-            onClick={() => setPurgeModalOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-700 bg-white hover:bg-red-50 border border-red-200 rounded-lg transition-colors whitespace-nowrap"
-          >
-            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Purge All Data (GDPR)</span>
-          </button>
-        </div>
-      </footer>
+      {/* Sheets & Modals */}
+      <SettingsSheet
+        isOpen={settingsOpen}
+        simulateOfflineError={simulateOfflineError}
+        onClose={() => setSettingsOpen(false)}
+        onToggleSimulateOfflineError={(next) => {
+          setSimulateOfflineError(next);
+          showToast(
+            next ? 'Simulated offline mode enabled.' : 'Simulated offline mode disabled.',
+            next ? 'warning' : 'info'
+          );
+        }}
+        onRequestPurgeAll={() => setPurgeModalOpen(true)}
+      />
 
-      {/* Modals */}
+      <EventDetailSheet
+        event={selectedEvent}
+        documentName={selectedEvent ? resolveDocumentName(selectedEvent.documentId) : null}
+        onClose={() => setSelectedEvent(null)}
+        onEdit={(evt) => {
+          setEditingEvent(evt);
+          setEditingIsDraft(false);
+          setEventModalOpen(true);
+        }}
+        onDelete={handleDeleteEvent}
+      />
+
       <EventFormModal
         isOpen={eventModalOpen}
         editingEvent={editingEvent}
         onClose={() => {
           setEventModalOpen(false);
           setEditingEvent(null);
+          setEditingIsDraft(false);
         }}
         onSave={handleSaveEvent}
       />
 
       <SourceSnippetModal
         event={verifyingEvent}
-        documentName={verifyingDocName}
+        documentName={verifyingEvent ? resolveDocumentName(verifyingEvent.documentId) : null}
         onClose={() => setVerifyingEvent(null)}
         onEditEvent={(evt) => {
           setEditingEvent(evt);
+          setEditingIsDraft(evt.status === 'DRAFT');
           setEventModalOpen(true);
         }}
       />
@@ -537,7 +544,7 @@ export default function App() {
       {toast && (
         <div
           role="status"
-          className="fixed bottom-4 right-4 z-50 max-w-sm bg-slate-900 text-white px-4 py-3 rounded-xl shadow-lg border border-slate-800 flex items-center gap-2.5"
+          className="fixed bottom-20 md:bottom-5 left-4 right-4 sm:left-auto sm:right-5 sm:max-w-sm z-40 bg-zinc-950 text-white px-4 py-3 rounded-2xl shadow-lg flex items-center gap-2.5"
         >
           {toast.tone === 'warning' ? (
             <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" aria-hidden="true" />
@@ -549,7 +556,7 @@ export default function App() {
             type="button"
             onClick={() => setToast(null)}
             aria-label="Dismiss notification"
-            className="text-slate-400 hover:text-white p-1"
+            className="text-zinc-400 hover:text-white p-1 shrink-0"
           >
             <X className="w-3.5 h-3.5" />
           </button>

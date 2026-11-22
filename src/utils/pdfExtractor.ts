@@ -36,16 +36,26 @@ export async function extractPdfTextClientSide(file: File): Promise<PdfExtractio
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
       const page = await pdf.getPage(pageNum);
       const textContent = await page.getTextContent();
-      const pageLine = textContent.items
-        .map((item) => ('str' in item ? item.str : ''))
-        .join(' ')
-        .replace(/\s+/g, ' ')
+
+      let rawPage = '';
+      for (const item of textContent.items) {
+        if (!('str' in item)) continue;
+        rawPage += item.str;
+        rawPage += item.hasEOL ? '\n' : ' ';
+      }
+
+      const cleanedPage = rawPage
+        .split('\n')
+        .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
         .trim();
-      if (pageLine) {
-        pageTexts.push(pageLine);
+
+      if (cleanedPage) {
+        pageTexts.push(`--- PAGE ${pageNum} of ${pdf.numPages} ---\n${cleanedPage}`);
       }
     }
-    fullText = pageTexts.join('\n');
+    fullText = pageTexts.join('\n\n');
   } else {
     // Graceful fallback for plain-text test fixtures saved with a .pdf extension
     const decoded = new TextDecoder('utf-8', { fatal: false }).decode(bytes).trim();

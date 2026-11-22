@@ -100,58 +100,65 @@ export const EventFormModal: React.FC<EventFormModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="event-form-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-zinc-950/40 backdrop-blur-xs"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
-      <div className="bg-white rounded-xl border border-slate-200 max-w-lg w-full shadow-xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-          <h2 id="event-form-title" className="text-base font-semibold text-slate-900">
-            {editingEvent ? 'Edit Event' : 'Add Academic Event'}
+      <div className="bg-white w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl border-t sm:border border-zinc-200 shadow-xl overflow-hidden pb-safe max-h-[92vh] flex flex-col">
+        <div className="sm:hidden flex justify-center pt-2.5 pb-1 shrink-0">
+          <div className="w-9 h-1 rounded-full bg-zinc-200" />
+        </div>
+
+        <div className="px-5 py-3.5 border-b border-zinc-100 flex items-center justify-between shrink-0">
+          <h2 id="event-form-title" className="text-base font-semibold text-zinc-950">
+            {editingEvent ? 'Edit Event' : 'Add Event'}
           </h2>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close modal"
-            className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
+            className="w-8 h-8 inline-flex items-center justify-center rounded-full text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="p-5 space-y-4 overflow-y-auto">
           {validationError && (
             <div
               role="alert"
-              className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs font-medium text-red-800"
+              className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs font-medium text-red-800"
             >
               {validationError}
             </div>
           )}
 
           <div>
-            <label htmlFor="evt-title" className="block text-xs font-medium text-slate-700 mb-1.5">
-              Event Title
+            <label htmlFor="evt-title" className="block text-xs font-medium text-zinc-600 mb-1.5">
+              Title
             </label>
             <input
               id="evt-title"
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g., Operating Systems Midterm Exam"
+              placeholder="e.g., Operating Systems Midterm"
               required
-              className="w-full px-3.5 py-2.5 text-sm text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600"
+              className="w-full px-3.5 py-2.5 text-sm text-zinc-950 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-zinc-900"
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label htmlFor="evt-type" className="block text-xs font-medium text-slate-700 mb-1.5">
-                Event Type
+              <label htmlFor="evt-type" className="block text-xs font-medium text-zinc-600 mb-1.5">
+                Type
               </label>
               <select
                 id="evt-type"
                 value={eventType}
                 onChange={(e) => setEventType(e.target.value as AcademicEventType)}
-                className="w-full px-3.5 py-2.5 text-sm text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600"
+                className="w-full px-3 py-2.5 text-sm text-zinc-950 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900"
               >
                 {EVENT_TYPES.map((item) => (
                   <option key={item.value} value={item.value}>
@@ -164,7 +171,7 @@ export const EventFormModal: React.FC<EventFormModalProps> = ({
             <div>
               <label
                 htmlFor="evt-priority"
-                className="block text-xs font-medium text-slate-700 mb-1.5"
+                className="block text-xs font-medium text-zinc-600 mb-1.5"
               >
                 Priority
               </label>
@@ -172,7 +179,7 @@ export const EventFormModal: React.FC<EventFormModalProps> = ({
                 id="evt-priority"
                 value={priority}
                 onChange={(e) => setPriority(e.target.value as EventPriority)}
-                className="w-full px-3.5 py-2.5 text-sm text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600"
+                className="w-full px-3 py-2.5 text-sm text-zinc-950 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900"
               >
                 {PRIORITIES.map((item) => (
                   <option key={item.value} value={item.value}>
@@ -184,7 +191,7 @@ export const EventFormModal: React.FC<EventFormModalProps> = ({
           </div>
 
           <div>
-            <label htmlFor="evt-date" className="block text-xs font-medium text-slate-700 mb-1.5">
+            <label htmlFor="evt-date" className="block text-xs font-medium text-zinc-600 mb-1.5">
               Date
             </label>
             <input
@@ -193,49 +200,49 @@ export const EventFormModal: React.FC<EventFormModalProps> = ({
               value={eventDate}
               onChange={(e) => setEventDate(e.target.value)}
               required
-              className="w-full px-3.5 py-2.5 text-sm font-mono tabular-nums text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600"
+              className="w-full px-3.5 py-2.5 text-sm font-mono tabular-nums text-zinc-950 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900"
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label htmlFor="evt-start" className="block text-xs font-medium text-slate-700 mb-1.5">
-                Start Time (optional)
+              <label htmlFor="evt-start" className="block text-xs font-medium text-zinc-600 mb-1.5">
+                Start Time
               </label>
               <input
                 id="evt-start"
                 type="time"
                 value={startTime}
                 onChange={(e) => setStartTime(e.target.value)}
-                className="w-full px-3.5 py-2.5 text-sm font-mono tabular-nums text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600"
+                className="w-full px-3 py-2.5 text-sm font-mono tabular-nums text-zinc-950 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900"
               />
             </div>
 
             <div>
-              <label htmlFor="evt-end" className="block text-xs font-medium text-slate-700 mb-1.5">
-                End Time (optional)
+              <label htmlFor="evt-end" className="block text-xs font-medium text-zinc-600 mb-1.5">
+                End Time
               </label>
               <input
                 id="evt-end"
                 type="time"
                 value={endTime}
                 onChange={(e) => setEndTime(e.target.value)}
-                className="w-full px-3.5 py-2.5 text-sm font-mono tabular-nums text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600"
+                className="w-full px-3 py-2.5 text-sm font-mono tabular-nums text-zinc-950 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900"
               />
             </div>
           </div>
 
-          <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-3">
+          <div className="pt-3 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-sm font-medium text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-colors"
+              className="w-full sm:w-auto px-4 py-2.5 text-sm font-medium text-zinc-700 bg-white hover:bg-zinc-100 border border-zinc-200 rounded-xl transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-4 py-2 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors"
+              className="w-full sm:w-auto px-4 py-2.5 text-sm font-medium text-white bg-zinc-950 hover:bg-zinc-800 rounded-xl transition-colors"
             >
               {editingEvent ? 'Save Changes' : 'Add Event'}
             </button>
