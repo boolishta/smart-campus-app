@@ -35,6 +35,7 @@ export interface DailyBriefing {
   briefingDate: string; // YYYY-MM-DD, unique per day
   summaryText: string;
   isOfflineFallback: boolean;
+  fallbackReason?: 'offline' | 'ai_error' | null;
   createdAt: string;
 }
 

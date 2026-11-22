@@ -24,47 +24,53 @@ export const DeleteDocumentModal: React.FC<DeleteDocumentModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="delete-doc-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-zinc-950/40 backdrop-blur-xs"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
-      <div className="bg-white rounded-xl border border-slate-200 max-w-md w-full shadow-xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-          <h2 id="delete-doc-title" className="text-base font-semibold text-slate-900">
-            Delete Uploaded File
+      <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl border-t sm:border border-zinc-200 shadow-xl overflow-hidden pb-safe">
+        <div className="sm:hidden flex justify-center pt-2.5 pb-1">
+          <div className="w-9 h-1 rounded-full bg-zinc-200" />
+        </div>
+
+        <div className="px-5 py-3.5 border-b border-zinc-100 flex items-center justify-between">
+          <h2 id="delete-doc-title" className="text-base font-semibold text-zinc-950">
+            Delete File
           </h2>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close confirmation"
-            className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
+            className="w-8 h-8 inline-flex items-center justify-center rounded-full text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="p-6 space-y-3">
-          <p className="text-sm text-slate-700 leading-relaxed">
-            Are you sure you want to remove{' '}
-            <span className="font-semibold text-slate-900 break-all">{document.fileName}</span>?
+        <div className="p-5 space-y-2.5">
+          <p className="text-sm text-zinc-700 leading-relaxed">
+            Remove{' '}
+            <span className="font-semibold text-zinc-950 break-all">{document.fileName}</span>?
           </p>
           {linkedEventsCount > 0 ? (
-            <p className="text-sm text-slate-600 leading-relaxed">
+            <p className="text-xs sm:text-sm text-zinc-500 leading-relaxed">
               This file is linked to{' '}
-              <span className="font-mono font-semibold text-slate-900">{linkedEventsCount}</span>{' '}
-              {linkedEventsCount === 1 ? 'confirmed event' : 'confirmed events'} in your timeline.
-              Choose whether to remove or keep them.
+              <span className="font-mono font-semibold text-zinc-900">{linkedEventsCount}</span>{' '}
+              {linkedEventsCount === 1 ? 'event' : 'events'} in your timeline.
             </p>
           ) : (
-            <p className="text-sm text-slate-600 leading-relaxed">
-              No timeline events are currently linked to this file.
+            <p className="text-xs sm:text-sm text-zinc-500 leading-relaxed">
+              No timeline events are linked to this file.
             </p>
           )}
         </div>
 
-        <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2.5">
+        <div className="px-5 py-4 bg-zinc-50/80 border-t border-zinc-100 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 text-sm font-medium text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-colors"
+            className="w-full sm:w-auto px-4 py-2.5 text-sm font-medium text-zinc-700 bg-white hover:bg-zinc-100 border border-zinc-200 rounded-xl transition-colors"
           >
             Cancel
           </button>
@@ -73,24 +79,24 @@ export const DeleteDocumentModal: React.FC<DeleteDocumentModalProps> = ({
               <button
                 type="button"
                 onClick={() => onDeleteDocumentOnly(document.documentId)}
-                className="px-4 py-2 text-sm font-medium text-slate-800 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg transition-colors"
+                className="w-full sm:w-auto px-4 py-2.5 text-sm font-medium text-zinc-900 bg-white hover:bg-zinc-100 border border-zinc-200 rounded-xl transition-colors"
               >
                 Keep Events
               </button>
               <button
                 type="button"
                 onClick={() => onDeleteWithLinkedEvents(document.documentId)}
-                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors"
               >
                 <Trash2 className="w-4 h-4" aria-hidden="true" />
-                <span>Remove Linked Events</span>
+                <span>Remove All</span>
               </button>
             </>
           ) : (
             <button
               type="button"
               onClick={() => onDeleteDocumentOnly(document.documentId)}
-              className="inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors"
             >
               <Trash2 className="w-4 h-4" aria-hidden="true" />
               <span>Delete File</span>

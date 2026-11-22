@@ -2,13 +2,22 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
+import {
+  EXTRACT_PDF_RESPONSE_SCHEMA,
+  EXTRACT_PDF_SYSTEM_INSTRUCTION,
+  MORNING_BRIEFING_RESPONSE_SCHEMA,
+  MORNING_BRIEFING_SYSTEM_INSTRUCTION,
+  buildExtractPdfPrompt,
+  buildMorningBriefingPrompt,
+} from './prompts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3000;
-const MODEL_NAME = 'gemini-4-hydrogen';
+const MODEL_NAME = 'gemini-3.5-flash-lite';
+const FALLBACK_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.5-flash'];
 
 function getGeminiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -25,10 +34,57 @@ function getGeminiClient(): GoogleGenAI {
   });
 }
 
+async function generateContentWithRetry(
+  ai: GoogleGenAI,
+  params: Parameters<GoogleGenAI['models']['generateContent']>[0]
+) {
+  let lastError: unknown;
+  const candidates = Array.from(new Set([params.model, ...FALLBACK_MODELS]));
+  for (let i = 0; i < candidates.length; i += 1) {
+    const model = candidates[i];
+    try {
+      return await ai.models.generateContent({ ...params, model });
+    } catch (err) {
+      lastError = err;
+      const status = (err as { status?: number })?.status;
+      const isTransient = status === 503 || status === 429 || status === 500 || status === 404;
+      if (!isTransient || i === candidates.length - 1) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }
+  throw lastError;
+}
+
 const VALID_EVENT_TYPES = new Set(['LECTURE', 'ASSIGNMENT', 'LAB', 'EXAM', 'OTHER']);
 const VALID_PRIORITIES = new Set(['LOW', 'MEDIUM', 'HIGH']);
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const DATE_HINT_RE =
+  /\b(?:\d{1,2}[\/\-.]\d{1,2}(?:[\/\-.]\d{2,4})?|\d{4}-\d{2}-\d{2}|(?:jan(?:uary|eiro)?|feb(?:ruary)?|fev(?:ereiro)?|mar(?:ch|ço|co)?|apr(?:il)?|abr(?:il)?|may|mai(?:o)?|jun(?:e|ho)?|jul(?:y|ho)?|aug(?:ust)?|ago(?:sto)?|sep(?:t(?:ember)?)?|set(?:embro)?|oct(?:ober)?|out(?:ubro)?|nov(?:ember|embro)?|dec(?:ember)?|dez(?:embro)?))\b/i;
+
+function extractCandidateDateLines(text: string): string[] {
+  const lines = text.split('\n');
+  const hints: string[] = [];
+  let currentPage = 'PAGE 1';
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const pageMatch = line.match(/^---\s*(PAGE\s+\d+(?:\s+of\s+\d+)?)\s*---$/i);
+    if (pageMatch) {
+      currentPage = pageMatch[1].toUpperCase();
+      continue;
+    }
+    if (DATE_HINT_RE.test(line)) {
+      const nextLine = (lines[i + 1] ?? '').trim();
+      const combined = /^\d{4}\b/.test(nextLine) ? `${line} ${nextLine}` : line;
+      hints.push(`[${currentPage}] ${combined.slice(0, 220)}`);
+    }
+  }
+  return hints.slice(0, 60);
+}
 
 interface ExtractedEventInput {
   title?: unknown;
@@ -81,69 +137,26 @@ async function startServer() {
           : new Date().toISOString().slice(0, 10);
 
       const ai = getGeminiClient();
+      const dateHints = extractCandidateDateLines(text);
 
-      const response = await ai.models.generateContent({
+      const response = await generateContentWithRetry(ai, {
         model: MODEL_NAME,
-        contents: `Document file name: ${typeof fileName === 'string' ? fileName : 'course-document.pdf'}
-Reference date (today): ${referenceDate}
-
-Extract all student academic deadlines, exams, assignments, labs, presentations, and scheduled lectures from the anonymized course document text below.
-
-DOCUMENT TEXT:
-${text}`,
+        contents: buildExtractPdfPrompt({
+          fileName: typeof fileName === 'string' ? fileName : 'course-document.pdf',
+          referenceDate,
+          dateHints,
+          text,
+        }),
         config: {
-          systemInstruction: `You extract structured academic calendar events from anonymized university course syllabi and assignment documents.
-Rules:
-1. Extract ONLY actual academic deadlines, exams, labs, project submissions, presentations, or scheduled lectures explicitly mentioned in the text.
-2. Do NOT treat document creation dates, syllabus publication dates, or copyright years as deadlines.
-3. Convert every event date to strict YYYY-MM-DD format. If a year is omitted, infer the nearest logical academic year relative to the reference date.
-4. Use HH:MM (24-hour) for startTime and endTime if explicitly mentioned, otherwise return an empty string "".
-5. Classify eventType strictly as one of: LECTURE, ASSIGNMENT, LAB, EXAM, OTHER.
-6. Classify priority strictly as one of: HIGH (exams, major projects, near deadlines), MEDIUM (assignments, labs), LOW (lectures, optional readings).
-7. For every extracted event, include sourceSnippet containing the exact verbatim sentence or short quote from the input text that specifies the event and date.
-8. If no academic dates or deadlines appear in the text, return an empty array [].`,
+          temperature: 0,
+          maxOutputTokens: 4096,
+          systemInstruction: EXTRACT_PDF_SYSTEM_INSTRUCTION,
           responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                title: {
-                  type: Type.STRING,
-                  description: 'Concise, clear event title including course name or code if available.',
-                },
-                eventType: {
-                  type: Type.STRING,
-                  description: 'One of: LECTURE, ASSIGNMENT, LAB, EXAM, OTHER',
-                },
-                eventDate: {
-                  type: Type.STRING,
-                  description: 'Event date in YYYY-MM-DD format.',
-                },
-                startTime: {
-                  type: Type.STRING,
-                  description: '24-hour HH:MM start or due time, or empty string if unspecified.',
-                },
-                endTime: {
-                  type: Type.STRING,
-                  description: '24-hour HH:MM end time, or empty string if unspecified.',
-                },
-                priority: {
-                  type: Type.STRING,
-                  description: 'One of: LOW, MEDIUM, HIGH',
-                },
-                sourceSnippet: {
-                  type: Type.STRING,
-                  description: 'Exact verbatim quote from the source PDF text supporting this event.',
-                },
-              },
-              required: ['title', 'eventType', 'eventDate', 'priority', 'sourceSnippet'],
-            },
-          },
+          responseSchema: EXTRACT_PDF_RESPONSE_SCHEMA,
         },
       });
 
-      const rawText = (response.text ?? '[]').trim();
+      const rawText = (response.text ?? '{"detectedDateStrings":[],"events":[]}').trim();
       let parsed: unknown;
       try {
         parsed = JSON.parse(rawText);
@@ -152,12 +165,18 @@ Rules:
         return;
       }
 
-      if (!Array.isArray(parsed)) {
+      const rawEvents = Array.isArray(parsed)
+        ? parsed
+        : parsed && typeof parsed === 'object' && Array.isArray((parsed as { events?: unknown }).events)
+        ? (parsed as { events: unknown[] }).events
+        : null;
+
+      if (!rawEvents) {
         res.status(502).json({ error: 'AI returned an unexpected format.' });
         return;
       }
 
-      const normalized = (parsed as ExtractedEventInput[])
+      const normalized = (rawEvents as ExtractedEventInput[])
         .filter((item) => item && typeof item.title === 'string' && item.title.trim().length > 0)
         .map((item) => {
           const rawType = typeof item.eventType === 'string' ? item.eventType.toUpperCase() : 'OTHER';
@@ -217,52 +236,17 @@ Rules:
 
       const ai = getGeminiClient();
 
-      const response = await ai.models.generateContent({
+      const response = await generateContentWithRetry(ai, {
         model: MODEL_NAME,
-        contents: `Today's date: ${referenceDate}
-Upcoming confirmed student schedule (anonymized):
-${JSON.stringify(safeEvents, null, 2)}
-
-Synthesize a concise Daily Morning Briefing (under 1 minute read) highlighting the top 3 priorities.`,
+        contents: buildMorningBriefingPrompt({
+          referenceDate,
+          events: safeEvents,
+        }),
         config: {
-          systemInstruction: `You write a crisp, practical Daily Morning Briefing for a university student at 08:00 AM.
-Rules:
-1. Keep the total reading time strictly under 1 minute (around 80-120 words total).
-2. Return up to 3 top priorities ordered by urgency and academic impact (exams and imminent deadlines first).
-3. Each priority MUST include the exact eventTitle copied verbatim from the provided schedule so the student can immediately recognize the item, plus a short 1-sentence actionable study focus.
-4. Keep the tone calm, direct, and student-friendly. No fluff, no markdown headers, no technical jargon.`,
+          temperature: 0.2,
+          systemInstruction: MORNING_BRIEFING_SYSTEM_INSTRUCTION,
           responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              overview: {
-                type: Type.STRING,
-                description: 'One brief opening sentence summarizing today and the upcoming week.',
-              },
-              priorities: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    eventTitle: {
-                      type: Type.STRING,
-                      description: 'Exact verbatim title of the referenced event from the schedule.',
-                    },
-                    dueLabel: {
-                      type: Type.STRING,
-                      description: 'Short timing label like "Today at 14:00" or "Due Nov 24".',
-                    },
-                    actionNote: {
-                      type: Type.STRING,
-                      description: 'One concise actionable study step (under 22 words).',
-                    },
-                  },
-                  required: ['eventTitle', 'dueLabel', 'actionNote'],
-                },
-              },
-            },
-            required: ['overview', 'priorities'],
-          },
+          responseSchema: MORNING_BRIEFING_RESPONSE_SCHEMA,
         },
       });
 

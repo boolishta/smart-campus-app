@@ -44,16 +44,16 @@ function parseIcsDateTime(rawValue: string): { date: string; time: string | null
 
 function inferEventType(summary: string, categories: string): AcademicEventType {
   const combined = `${summary} ${categories}`.toLowerCase();
-  if (/\b(exam|midterm|final|quiz|test|assessment)\b/.test(combined)) {
+  if (/\b(exam|exame|midterm|final|quiz|test|teste|assessment|avaliação|avaliacao|defesa|apresentação|apresentacao)\b/.test(combined)) {
     return 'EXAM';
   }
-  if (/\b(lab|laboratory|practical|workshop)\b/.test(combined)) {
+  if (/\b(lab|laboratory|laboratório|laboratorio|practical|prática|pratica|pl\d*|workshop)\b/.test(combined)) {
     return 'LAB';
   }
-  if (/\b(assignment|homework|deliverable|project|submission|report|essay|milestone|due)\b/.test(combined)) {
+  if (/\b(assignment|homework|deliverable|project|projeto|projecto|submission|entrega|submissão|submissao|report|relatório|relatorio|essay|milestone|due)\b/.test(combined)) {
     return 'ASSIGNMENT';
   }
-  if (/\b(lecture|class|seminar|tutorial|course)\b/.test(combined)) {
+  if (/\b(lecture|teórica|teorica|class|aula|seminar|tutorial|course)\b/.test(combined)) {
     return 'LECTURE';
   }
   return 'OTHER';
@@ -103,6 +103,10 @@ export function parseIcsContent(icsText: string, documentId: string): AcademicEv
 
         if (startParsed) {
           const eventType = inferEventType(summary, categories);
+          const cleanEndTime =
+            endParsed && endParsed.time && endParsed.time !== startParsed.time
+              ? endParsed.time
+              : null;
           drafts.push({
             eventId: createId('evt'),
             documentId,
@@ -110,7 +114,7 @@ export function parseIcsContent(icsText: string, documentId: string): AcademicEv
             eventType,
             eventDate: startParsed.date,
             startTime: startParsed.time,
-            endTime: endParsed ? endParsed.time : null,
+            endTime: cleanEndTime,
             priority: inferPriority(eventType),
             status: 'DRAFT',
             sourceSnippet: null,
